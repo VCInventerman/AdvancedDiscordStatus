@@ -3,7 +3,10 @@
 #include <winrt/Windows.Media.h>
 #include <winrt/Windows.Media.Control.h>
 
+#define EVG_LIB_DISCORD
+
 #include <evglib>
+#include <evergreen/WideStringIntake.h>
 
 using namespace evg;
 using namespace winrt;
@@ -67,40 +70,6 @@ HRESULT EnumSessions(IAudioSessionManager2* pSessionManager)
 }
 
 
-class GroupSignal
-{
-public:
-	bool ready = false;
-	std::mutex m;
-	std::condition_variable c;
-
-	void signal() noexcept
-	{
-		{
-			std::unique_lock<std::mutex> lock(m);
-			ready = true;
-		}
-		c.notify_one();
-	}
-
-	void watch()
-	{
-		std::unique_lock<std::mutex> lock(m);
-		while (!ready)
-		{
-			c.wait(lock);
-			if (!ready)
-			{
-				std::cout << "UNLOCK WITHOUT READY\n";
-			}
-		}
-	}
-
-	~GroupSignal()
-	{
-		std::unique_lock<std::mutex> lock(m);
-	}
-};
 
 
 
@@ -173,28 +142,7 @@ public:
 
 
 
-struct AsyncSleeper : std::suspend_always
-{
-public:
-	boost::asio::high_resolution_timer timer;
 
-	AsyncSleeper(std::chrono::milliseconds _time) : timer(threads, _time) {}
-
-	void await_suspend(std::coroutine_handle<> handle)
-	{
-		timer.async_wait([handle](const std::error_code e) 
-			{ 
-				if (e) { throw std::runtime_error(e.message()); }
-				handle(); 
-			});
-	}
-};
-
-
-auto AsyncSleep(std::chrono::milliseconds time)
-{
-	return AsyncSleeper(time);
-}
 
 Task<int> it()
 {
@@ -232,50 +180,47 @@ Task<void> getCurrentMedia()
 
 		if (GetWindowTextW(currentWindow, windowTitle.in_u16(), windowTitle.size_u16() - 1))
 		{
-			//std::copy(std::begin(in), std::end(in), std::begin(title));
-			//std::cout << adapter.get_u8() << '\n';
+			Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager manager(nullptr);
+			auto sessions = co_await manager.RequestAsync();
+			auto currentSession = sessions.GetCurrentSession();
+			assert(currentSession);
+			auto info = co_await currentSession.TryGetMediaPropertiesAsync();
 
-			//auto f = std::ofstream("C:\\Users\\nickk\\source\\repos\\AdvancedDiscordStatus\\x64\\Debug");
-			//f << adapter.get_u8();
+			audioTitle = "Listening to ";
+			utf16ToUtf8(info.Artist(), audioTitle);
+			audioTitle += " - ";
+			utf16ToUtf8(info.Title(), audioTitle);
+
+			StringBuilderBase<WChar> audioTitleTerminal;
+			utf8ToUtf16(audioTitle, audioTitleTerminal);
+
+
+			//std::wcout << windowTitle.get_u8() << '\n';
+			//std::wcout << audioTitle << '\n';
+
+			std::wcout << windowTitle.get_u16().data() << '\n';
+			std::wcout << audioTitleTerminal.data() << '\n';
+
+
+
+
+
+			memset(&activity, 0, sizeof(activity));
+			activity.type = DiscordActivityType_Playing;
+			//activity.application_id = 684941486873378867;
+			memcpy(&activity.details, windowTitle.get_u8().data(), windowTitle.get_u8().size());
+			memcpy(&activity.state, audioTitle, audioTitle.size());
+			memcpy(&activity.assets.large_image, "chrome", 7);
+
+			IDiscordActivityManager* dmanager = app.core->get_activity_manager(app.core);
+			dmanager->update_activity(dmanager, &activity, nullptr, nullptr);
+
+			app.core->run_callbacks(app.core);
 		}
 		else
 		{
-			std::cout << "Last error: " << GetLastError() << '\n';
+			std::wcout << "Last error: " << GetLastError() << '\n';
 		}
-
-
-
-
-
-		Windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager manager(nullptr);
-		auto sessions = co_await manager.RequestAsync();
-		auto currentSession = sessions.GetCurrentSession();
-		assert(currentSession);
-		auto info = co_await currentSession.TryGetMediaPropertiesAsync();
-
-		audioTitle = "Listening to ";
-		utf16ToUtf8(info.Artist(), audioTitle);
-		audioTitle += " - ";
-		utf16ToUtf8(info.Title(), audioTitle);
-		std::cout << windowTitle.get_u8() << '\n';
-		std::cout << audioTitle << '\n';
-
-
-
-
-		
-		memset(&activity, 0, sizeof(activity));
-		activity.type = DiscordActivityType_Playing;
-		//activity.application_id = 684941486873378867;
-		memcpy(&activity.details, windowTitle.get_u8().data(), windowTitle.get_u8().size());
-		memcpy(&activity.state, audioTitle, audioTitle.size());
-		memcpy(&activity.assets.large_image, "chrome", 7);
-
-		IDiscordActivityManager* dmanager = app.core->get_activity_manager(app.core);
-		dmanager->update_activity(dmanager, &activity, nullptr, nullptr);
-
-		app.core->run_callbacks(app.core);
-
 
 		co_await AsyncSleep(1s);
 	}
@@ -285,16 +230,36 @@ Task<void> getCurrentMedia()
 
 int main(int argc, char** argv)
 {
-	threads.init();
-	//thisProgram.setArgs(argc, argv);
+	evgProgramBegin(argc, argv, "AdvancedDiscordStatus", SemVer("1.0.0"));
 
-	std::cout << "AdvancedDiscordStatus by VCInventerman\n";
+	
+
+	/*CONSOLE_FONT_INFOEX cfi;
+	cfi.cbSize = sizeof cfi;
+	cfi.nFont = 0;
+	cfi.dwFontSize.X = 0;
+	cfi.dwFontSize.Y = 16;
+	cfi.FontFamily = FF_DONTCARE;
+	cfi.FontWeight = FW_NORMAL;
+	wcscpy_s(cfi.FaceName, L"Consolas");
+	SetCurrentConsoleFontEx(GetStdHandle(STD_OUTPUT_HANDLE), FALSE, &cfi);
+
+
+
+	_setmode(_fileno(stdout), _O_U16TEXT);
+	*///_setmode(_fileno(stdin), _O_U16TEXT);
+	//SetConsoleOutputCP(1200);
+
+	_setmode(_fileno(stdout), _O_U16TEXT);
+	
+	//std::cout << "AdvancedDiscordStatus by VCInventerman\n";
 
 	Task p = getCurrentMedia();
 	p.signal.watch();
 	
 
-	std::cout << "Hello World!\n";
+	//std::cout << "Hello World!\n";
 
 	threads.stop();
 }
+
